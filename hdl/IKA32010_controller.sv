@@ -23,10 +23,10 @@ module IKA32010_controller
     output  reg             o_DOUT_OE_n,
 
     //flag
-    input   reg             i_BIO_n,
+    input   wire            i_BIO_n,
 
     //interrupt
-    input   reg             i_INT_n
+    input   wire            i_INT_n
 );
 
 `define IKA32010_DISASSEMBLY
@@ -55,8 +55,8 @@ assign  o_CLKOUT = cyclecntr[1];
 assign  o_CLKOUT_NCEN_n = ~(cyclecntr == 2'd3) | i_CLKIN_PCEN_n;
 assign  o_CLKOUT_PCEN_n = ~(cyclecntr == 2'd1) | i_CLKIN_PCEN_n;
 
-assign  ncen_n = o_CLKOUT_NCEN_n;
-assign  pcen_n = o_CLKOUT_PCEN_n;
+wire            ncen_n = o_CLKOUT_NCEN_n;
+wire            pcen_n = o_CLKOUT_PCEN_n;
 
 
 
@@ -78,7 +78,7 @@ end
 
 //opcode register
 reg     [15:0]  if_opcodereg;
-reg             if_opcodereg_force_zero;
+reg             if_opcodereg_force_special;
 
 
 
@@ -183,9 +183,6 @@ always @(*) begin
 end
 
 
-//outlatch/inlatch
-assign  if_pc_immediate_addr = busctrl_inlatch[11:0]; //to program counter
-
 //microcode should reset these things
 reg     [2:0]   busctrl_req; //0 = stop, 1 = instruction read, 
                              //2 = table read, 3= table write, 
@@ -207,12 +204,12 @@ always @(posedge i_EMUCLK) begin
     if(!i_RS_n) begin
         busctrl_inlatch <= 16'h0000;
 
-        if_opcodereg <= 16'h0000;
+        if_opcodereg <= 16'hFFFF;
     end
     else begin
         if(!i_CLKIN_PCEN_n) begin
             if(cyclecntr == 2'd3) begin
-                if(if_opcodereg_force_zero) if_opcodereg <= 16'h0000;
+                if(if_opcodereg_force_special) if_opcodereg <= 16'hFFFF;
                 else begin
                     if(busctrl_mode[2:0] == 3'd1) if_opcodereg <= i_DIN;
                 end
@@ -836,7 +833,7 @@ always @(*) begin
     ex_inst_cycle_rst = YES;
     
     //force next opcode nop?
-    if_opcodereg_force_zero = YES; //flush!
+    if_opcodereg_force_special = YES; //flush!
     
     //ALU operation
     alu_modesel = ALU_ADD; alu_paz = NO; alu_pbz = NO; alu_pbdata = ALU_PBDATA_LONGWORD; alu_pbsel = ALU_SOURCE_SHFT;
@@ -890,7 +887,7 @@ always @(*) begin
 
     else if(ex_state == 3'b001) begin
         //interrupt check
-        if_opcodereg_force_zero = (int_rq) ? YES : NO;
+        if_opcodereg_force_special = (int_rq) ? YES : NO;
         if_pc_modesel =           (int_rq) ? PC_LOAD_INTERRUPT : PC_INCREASE;
         stk_push =                (int_rq) ? YES : NO;
         stk_data_sel =            (int_rq) ? STACK_DATA_PC : STACK_DATA_ACC;
@@ -902,12 +899,12 @@ always @(*) begin
             //
 
             //INTERNAL SPECIAL INSTRUCTION: IDK
-            16'b0000_0000_0000_0000: begin
+            16'b1111_1111_1111_1111: begin
                 busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
                 if_pc_modesel = PC_INCREASE;
 
                 //acknowledge interrupt
-                if_opcodereg_force_zero = NO;
+                if_opcodereg_force_special = NO;
                 int_ack = (int_rq) ? YES : NO;
                 stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 `ifdef IKA32010_DISASSEMBLY 
@@ -982,7 +979,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_pop = YES; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1003,7 +1000,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = YES; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1145,7 +1142,7 @@ always @(*) begin
             end
 
             //LAC - Load accumulator with shift
-            16'b0111_1001_????_????: begin
+            16'b0010_????_????_????: begin
                 busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
                 alu_modesel = ALU_ADD; alu_paz = YES; //block acc feedback
                 alu_acc_ld = YES;
@@ -1402,14 +1399,17 @@ always @(*) begin
                 `endif
             end
 
-            //LARP - Load Auxillary Register Pointer Immediate
+            //MAR(LARP) - Modify auxiliary register and pointer(Load Auxillary Register Pointer Immediate)
             16'b0110_1000_1000_000?: begin
                 busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
-                if(if_opcodereg[0]) reg_arp_set = YES;
-                else                reg_arp_rst = YES;
+                reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                if(!if_opcodereg[3]) begin //AR register
+                    if(if_opcodereg[0]) reg_arp_set = YES;
+                    else                reg_arp_rst = YES;
+                end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type5("LARP", if_opcodereg, if_pc);
+                    disasm_type2("MAR(LARP)", if_opcodereg, if_pc, 0);
                 `endif
             end
 
@@ -1442,19 +1442,12 @@ always @(*) begin
                 `endif
             end
 
-            //MAR - Modify auxiliary register and pointer
-            16'b0110_1000_????_????: begin
+            //MAR(NOP) - Modify auxiliary register and pointer
+            16'b0110_1000_0???_????: begin
                 busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
-                if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
-                    if(!if_opcodereg[3]) begin //AR register
-                        if(if_opcodereg[0]) reg_arp_set = YES;
-                        else                reg_arp_rst = YES;
-                    end
-                end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("LDP", if_opcodereg, if_pc, 0);
+                    disasm_type0("MAR(NOP)", if_pc);
                 `endif
             end
 
@@ -1491,7 +1484,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1512,7 +1505,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1533,7 +1526,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1553,7 +1546,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1574,7 +1567,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1595,7 +1588,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1615,7 +1608,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1635,7 +1628,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1656,7 +1649,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
                     
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1676,7 +1669,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1697,7 +1690,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = YES; stk_data_sel = STACK_DATA_PC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1717,7 +1710,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = YES; stk_data_sel = STACK_DATA_PC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1738,7 +1731,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_pop = YES; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1763,7 +1756,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1794,7 +1787,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1823,7 +1816,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = YES; stk_data_sel = STACK_DATA_PC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1833,7 +1826,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_pop = YES; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd2) begin
@@ -1864,7 +1857,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = YES; stk_data_sel = STACK_DATA_PC;
                 end
                 else if(ex_inst_cycle == 2'd1) begin
@@ -1874,7 +1867,7 @@ always @(*) begin
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
-                    if_opcodereg_force_zero = NO; 
+                    if_opcodereg_force_special = NO; 
                     stk_push = NO; stk_pop = YES; stk_data_sel = STACK_DATA_ACC;
                 end
                 else if(ex_inst_cycle == 2'd2) begin
@@ -2076,8 +2069,8 @@ module IKA32010_ram (
 
 reg     [15:0]  RAM[0:255];
 
-always @(posedge i_EMUCLK) if(!i_CEN_n) begin
-    if(i_WE) RAM[i_ADDR] <= i_DIN;
+always @(posedge i_EMUCLK) begin
+    if(i_WE & ~i_CEN_n) RAM[i_ADDR] <= i_DIN;
     else o_DOUT <= RAM[i_ADDR];
 end
 
