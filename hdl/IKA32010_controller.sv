@@ -26,10 +26,7 @@ module IKA32010_controller
     input   reg             i_BIO_n,
 
     //interrupt
-    input   reg             i_INT_n,
-
-    input   wire    [15:0]  i_DATABUS_READ,
-    output  wire    [15:0]  o_DATABUS_WRITE
+    input   reg             i_INT_n
 );
 
 `define IKA32010_DISASSEMBLY
@@ -86,18 +83,6 @@ reg             if_opcodereg_force_zero;
 
 
 ///////////////////////////////////////////////////////////
-//////  Peripheral address register
-////
-
-reg     [2:0]   ex_addr_peripheral; //address for peripheral(PA)
-reg             ex_addr_peripheral_ld;
-always @(posedge i_EMUCLK) if(!ncen_n) begin
-    ex_addr_peripheral <= (ex_addr_peripheral_ld) ? if_opcodereg[10:8] : ex_addr_peripheral;
-end
-
-
-
-///////////////////////////////////////////////////////////
 //////  Program counter
 ////
 
@@ -139,6 +124,43 @@ end
 
 
 ///////////////////////////////////////////////////////////
+//////  Internal write bus control
+////
+
+//sources
+reg     [15:0]  shb_output;
+wire    [15:0]  ar_data_output;
+wire    [11:0]  stk_output;
+wire    [15:0]  flag_output;
+wire    [15:0]  ram_output;
+reg     [15:0]  busctrl_inlatch;
+
+//select write bus data
+localparam  WRBUS_SOURCE_SHB     = 3'd0;
+localparam  WRBUS_SOURCE_RAM     = 3'd1;
+localparam  WRBUS_SOURCE_AR      = 3'd2;
+localparam  WRBUS_SOURCE_STACK   = 3'd3;
+localparam  WRBUS_SOURCE_INST    = 3'd4;
+localparam  WRBUS_SOURCE_FLAG    = 3'd5;
+localparam  WRBUS_SOURCE_INLATCH = 3'd6;
+reg     [2:0]   register_wrbus_source_sel; //0 SHIFTER-B, 1 RAM, 2 AR, 3 INSTRUCTION
+
+always @(*) begin
+    case(register_wrbus_source_sel)
+        WRBUS_SOURCE_SHB     : register_wrbus = shb_output;
+        WRBUS_SOURCE_RAM     : register_wrbus = ram_output;
+        WRBUS_SOURCE_AR      : register_wrbus = ar_data_output;
+        WRBUS_SOURCE_STACK   : register_wrbus = {4'h0, stk_output};
+        WRBUS_SOURCE_INST    : register_wrbus = {8'h00, if_opcodereg[7:0]};
+        WRBUS_SOURCE_FLAG    : register_wrbus = flag_output;
+        WRBUS_SOURCE_INLATCH : register_wrbus = busctrl_inlatch;
+        default              : register_wrbus = 16'h0000;
+    endcase
+end
+
+
+
+///////////////////////////////////////////////////////////
 //////  Bus controller
 ////
 
@@ -156,13 +178,12 @@ assign o_AOUT = busctrl_addr;
 always @(*) begin
     case(busctrl_mode[3])
         1'b0: busctrl_addr <= if_pc; //program counter + data offset
-        1'b1: busctrl_addr <= {9'b0000_0000_0, ex_addr_peripheral}; //PA0 1 2
+        1'b1: busctrl_addr <= {9'b0000_0000_0, if_opcodereg[10:8]}; //PA0 1 2
     endcase
 end
 
 
 //outlatch/inlatch
-reg     [15:0]  busctrl_outlatch, busctrl_inlatch;
 assign  if_pc_immediate_addr = busctrl_inlatch[11:0]; //to program counter
 
 //microcode should reset these things
@@ -184,7 +205,6 @@ end
 
 always @(posedge i_EMUCLK) begin
     if(!i_RS_n) begin
-        busctrl_outlatch <= 16'h0000;
         busctrl_inlatch <= 16'h0000;
 
         if_opcodereg <= 16'h0000;
@@ -234,7 +254,7 @@ always @(posedge i_EMUCLK) begin
                 case(cyclecntr)
                     2'd0: begin o_MEN_n <= 1'b1; o_DEN_n <= 1'b1; o_WE_n <= 1'b1; o_DOUT_OE_n <= 1'b1; end
                     2'd1: begin o_MEN_n <= 1'b1; o_DEN_n <= 1'b1; o_WE_n <= 1'b1; o_DOUT_OE_n <= 1'b0;
-                            o_DOUT <= busctrl_outlatch; end
+                            o_DOUT <= ram_output; end
                     2'd2: begin o_MEN_n <= 1'b1; o_DEN_n <= 1'b1; o_WE_n <= 1'b0; o_DOUT_OE_n <= 1'b0; end
                     2'd3: begin o_MEN_n <= 1'b1; o_DEN_n <= 1'b1; o_WE_n <= 1'b1; o_DOUT_OE_n <= 1'b1; end
                 endcase
@@ -256,15 +276,10 @@ always @(posedge i_EMUCLK) begin
                 case(cyclecntr)
                     2'd0: begin o_MEN_n <= 1'b1; o_DEN_n <= 1'b1; o_WE_n <= 1'b1; o_DOUT_OE_n <= 1'b1; end
                     2'd1: begin o_MEN_n <= 1'b1; o_DEN_n <= 1'b1; o_WE_n <= 1'b1; o_DOUT_OE_n <= 1'b0;
-                            o_DOUT <= busctrl_outlatch; end
+                            o_DOUT <= register_wrbus; end
                     2'd2: begin o_MEN_n <= 1'b1; o_DEN_n <= 1'b1; o_WE_n <= 1'b0; o_DOUT_OE_n <= 1'b0; end
                     2'd3: begin o_MEN_n <= 1'b1; o_DEN_n <= 1'b1; o_WE_n <= 1'b1; o_DOUT_OE_n <= 1'b1; end
                 endcase
-            end
-
-            //not defined
-            else begin
-
             end
         end
     end
@@ -277,34 +292,6 @@ end
 
 
 
-///////////////////////////////////////////////////////////
-//////  Internal write bus control
-////
-
-//sources
-reg     [15:0]  shb_output;
-wire    [15:0]  ram_output;
-wire    [15:0]  ar_data_output;
-wire    [11:0]  stk_output;
-
-//select write bus data
-localparam  WRBUS_SOURCE_SHB    = 3'd0;
-localparam  WRBUS_SOURCE_RAM    = 3'd1;
-localparam  WRBUS_SOURCE_AR     = 3'd2;
-localparam  WRBUS_SOURCE_STK    = 3'd3;
-localparam  WRBUS_SOURCE_INST   = 3'd4;
-reg     [2:0]   register_wrbus_source_sel; //0 SHIFTER-B, 1 RAM, 2 AR, 3 INSTRUCTION
-
-always @(*) begin
-    case(register_wrbus_source_sel)
-        WRBUS_SOURCE_SHB : register_wrbus = shb_output;
-        WRBUS_SOURCE_RAM : register_wrbus = ram_output;
-        WRBUS_SOURCE_AR  : register_wrbus = ar_data_output;
-        WRBUS_SOURCE_STK : register_wrbus = {4'h0, stk_output};
-        WRBUS_SOURCE_INST: register_wrbus = {8'h00, if_opcodereg[7:0]};
-        default          : register_wrbus = 16'h0000;
-    endcase
-end
 
 
 
@@ -337,19 +324,24 @@ end
 //alu overflow mode bit
 reg             reg_intm; //0 = interrupt enabled, 1 = interrupt disabled
 reg             reg_intm_en, reg_intm_dis;
-always @(posedge i_EMUCLK) if(!ncen_n) begin
-    case({reg_intm_en, reg_intm_dis})
-        2'b00: reg_intm <= reg_intm;
-        2'b01: reg_intm <= 1'b1;
-        2'b10: reg_intm <= 1'b0;
-        2'b11: reg_intm <= reg_intm;
-    endcase
+always @(posedge i_EMUCLK) begin
+    if(!i_RS_n) reg_intm <= 1'b0;
+    else begin
+        if(!ncen_n) begin
+            case({reg_intm_en, reg_intm_dis})
+                2'b00: reg_intm <= reg_intm;
+                2'b01: reg_intm <= 1'b1;
+                2'b10: reg_intm <= 1'b0;
+                2'b11: reg_intm <= reg_intm;
+            endcase
+        end
+    end
 end
 
 
 
 //auxillary register pointer and register
-reg             reg_arp_ld;
+reg             reg_arp_set, reg_arp_rst;
 reg             reg_arp;
 
 reg             reg_ar_ld; //AR reg load
@@ -369,7 +361,11 @@ always @(posedge i_EMUCLK) begin
     else begin
         if(!ncen_n) begin
             //auxillary register pointer
-            reg_arp <= (reg_arp_ld) ? register_wrbus[0] : reg_arp;
+            case({reg_arp_set, reg_arp_rst})
+                2'b10: reg_arp <= 1'b1;
+                2'b01: reg_arp <= 1'b0;
+                default: reg_arp <= reg_arp;
+            endcase
 
             //auxillary register
             if(reg_ar_ld) begin
@@ -388,13 +384,20 @@ always @(posedge i_EMUCLK) begin
 end
 
 //data memory page pointer
-reg             reg_dp, reg_dp_ld;
+reg             reg_dp_set, reg_dp_rst;
+reg             reg_dp;
 always @(posedge i_EMUCLK) begin
     if(i_RS_n) begin
         reg_dp <= 1'b0;
     end
     else begin
-        if(!ncen_n) reg_dp <= (reg_dp_ld) ? register_wrbus[0] : reg_dp;
+        if(!ncen_n) begin
+            case({reg_dp_set, reg_dp_rst})
+                2'b10: reg_dp <= 1'b1;
+                2'b01: reg_dp <= 1'b0;
+                default: reg_dp <= reg_dp;
+            endcase
+        end
     end
 end
 
@@ -503,6 +506,7 @@ localparam  ALU_SOURCE_MUL      = 1'b1;
 
 reg             alu_acc_ld;
 wire    [31:0]  alu_acc_output;
+reg             alu_v_set, alu_v_rst;
 wire            alu_flag_zero, alu_flag_neg, alu_flag_ovfl;
 
 IKA32010_alu u_alu (
@@ -511,6 +515,7 @@ IKA32010_alu u_alu (
     .i_ALU_PA(alu_acc_output), .i_ALU_PB(alu_pbsel ? reg_p : sha_output),
     .i_ALU_ACC_LD(alu_acc_ld), 
     .o_ALU_ACC_OUTPUT(alu_acc_output),
+    .i_ALU_V_SET(alu_v_set), .i_ALU_V_RST(alu_v_rst),
     .o_Z(alu_flag_zero), .o_N(alu_flag_neg), .o_V(alu_flag_ovfl)
 );
 
@@ -532,16 +537,24 @@ end
 
 
 ///////////////////////////////////////////////////////////
+//////  Status bits
+////
+
+assign  flag_output = {alu_flag_ovfl, reg_ovm, reg_intm, 4'b1111, reg_arp, 6'b111111, 1'b1, reg_dp}; //bit1 is don't care
+
+
+
+///////////////////////////////////////////////////////////
 //////  Data RAM
 ////
 
 //RAM address source select(0 = direct, 1 = indirect)
 wire    [7:0]   ram_addr = if_opcodereg[7] ? ar_addr_output : {reg_dp, if_opcodereg[6:0]};
-reg             ram_rd, ram_wr;
+reg             ram_dmov, ram_rd, ram_wr;
 
 IKA32010_ram u_ram (
-    .i_EMUCLK(i_EMUCLK), .i_CEN_n(pcen_n),
-    .i_WE(ram_wr), .i_ADDR(ram_addr), .i_DIN(register_wrbus), .o_DOUT(ram_output)
+    .i_EMUCLK(i_EMUCLK), .i_CEN_n(i_CLKIN_PCEN_n),
+    .i_DMOV(ram_dmov), .i_WE(ram_wr), .i_ADDR(ram_addr), .i_DIN(register_wrbus), .o_DOUT(ram_output)
 );
 
 
@@ -612,6 +625,7 @@ end
 
 //disassembly message
 `ifdef IKA32010_DISASSEMBLY
+int     pc_z;
 string  disasm, num_data;
 
 //NOP, ABS
@@ -626,7 +640,8 @@ function void disasm_type0;
     disasm = {disasm, num_data};
     disasm = {disasm, " ", mnemonic};
     disasm = {disasm, "\n"};
-    $display(disasm);
+    if(pc_z != pc) $display(disasm);
+    pc_z = pc;
 endfunction
 
 //ADD, LAC, SUB...
@@ -651,14 +666,15 @@ function void disasm_type1;
         else if(opcodereg[5:4] == 2'b10) disasm = {disasm, " *+"};
         $sformat(num_data, ", %d", opcodereg[11:8]);
         disasm = {disasm, num_data};
-        if(opcodereg[3]) begin
+        if(!opcodereg[3]) begin
             num_data = "";
             $sformat(num_data, ", %b", opcodereg[0]);
             disasm = {disasm, num_data};
         end
     end
     disasm = {disasm, "\n"};
-    $display(disasm);
+    if(pc_z != pc) $display(disasm);
+    pc_z = pc;
 endfunction
 
 //ADDH, AND, OR...
@@ -675,25 +691,26 @@ function void disasm_type2;
     disasm = {disasm, num_data};
     disasm = {disasm, " ", mnemonic};
     if(aux) begin
-        $sformat(num_data, " AR%b", opcodereg[8]);
+        $sformat(num_data, " AR%b,", opcodereg[8]);
         disasm = {disasm, num_data};
     end
     if(!opcodereg[7]) begin
-        $sformat(num_data, " DAT0x%h, %d", opcodereg[6:0], opcodereg[11:8]);
+        $sformat(num_data, " DAT0x%h", opcodereg[6:0]);
         disasm = {disasm, num_data};
     end
     else begin
              if(opcodereg[5:4] == 2'b00) disasm = {disasm, " *"}; //inc/dec
         else if(opcodereg[5:4] == 2'b01) disasm = {disasm, " *-"};
         else if(opcodereg[5:4] == 2'b10) disasm = {disasm, " *+"};
-        if(opcodereg[3]) begin
+        if(!opcodereg[3]) begin
             num_data = "";
             $sformat(num_data, ", %b", opcodereg[0]);
             disasm = {disasm, num_data};
         end
     end
     disasm = {disasm, "\n"};
-    $display(disasm);
+    if(pc_z != pc) $display(disasm);
+    pc_z = pc;
 endfunction
 
 //LACK
@@ -710,13 +727,14 @@ function void disasm_type3;
     disasm = {disasm, num_data};
     disasm = {disasm, " ", mnemonic};
     if(aux) begin
-        $sformat(num_data, " AR%b", opcodereg[8]);
+        $sformat(num_data, " AR%b,", opcodereg[8]);
         disasm = {disasm, num_data};
     end
     $sformat(num_data, " 0x%h", opcodereg[7:0]);
     disasm = {disasm, num_data};
     disasm = {disasm, "\n"};
-    $display(disasm);
+    if(pc_z != pc) $display(disasm);
+    pc_z = pc;
 endfunction
 
 //B
@@ -740,11 +758,13 @@ function void disasm_type4;
             $sformat(num_data, " 0x%h", branch[11:0]);
             disasm = {disasm, num_data};
             disasm = {disasm, "\n"};
-            $display(disasm);
+            if(pc_z != pc) $display(disasm);
+            pc_z = pc;
         end
         else begin
             disasm = {disasm, "\n"};
-            $display(disasm);
+            if(pc_z != pc) $display(disasm);
+            pc_z = pc;
         end
     end
 endfunction
@@ -764,7 +784,42 @@ function void disasm_type5;
     $sformat(num_data, " 0x%b", opcodereg[0]);
     disasm = {disasm, num_data};
     disasm = {disasm, "\n"};
-    $display(disasm);
+    if(pc_z != pc) $display(disasm);
+    pc_z = pc;
+endfunction
+
+function void disasm_type6;
+    input   string  mnemonic;
+    input   [15:0]  opcodereg;
+    input   [11:0]  pc;
+    disasm = "";
+    `ifdef IKA32010_DISASSEMBLY_SHOWID
+        disasm = {"IKA32010_", `IKA32010_DEVICE_ID, ": "};
+    `endif
+    $sformat(num_data, " PC=0x%h |", {pc-1}[11:0]);
+    disasm = {disasm, num_data};
+    disasm = {disasm, " ", mnemonic};
+    if(!opcodereg[7]) begin
+        $sformat(num_data, " DAT0x%h", opcodereg[6:0]);
+        disasm = {disasm, num_data};
+        $sformat(num_data, ", PA%d", opcodereg[10:8]);
+        disasm = {disasm, num_data};
+    end
+    else begin
+             if(opcodereg[5:4] == 2'b00) disasm = {disasm, " *"}; //inc/dec
+        else if(opcodereg[5:4] == 2'b01) disasm = {disasm, " *-"};
+        else if(opcodereg[5:4] == 2'b10) disasm = {disasm, " *+"};
+        $sformat(num_data, ", PA%d", opcodereg[10:8]);
+        disasm = {disasm, num_data};
+        if(!opcodereg[3]) begin
+            num_data = "";
+            $sformat(num_data, ", %b", opcodereg[0]);
+            disasm = {disasm, num_data};
+        end
+    end
+    disasm = {disasm, "\n"};
+    if(pc_z != pc) $display(disasm);
+    pc_z = pc;
 endfunction
 `endif
 
@@ -786,17 +841,20 @@ always @(*) begin
     //ALU operation
     alu_modesel = ALU_ADD; alu_paz = NO; alu_pbz = NO; alu_pbdata = ALU_PBDATA_LONGWORD; alu_pbsel = ALU_SOURCE_SHFT;
 
-    //load peripheral address?
-    ex_addr_peripheral_ld = NO;
+    //ALU overflow flag set/reset
+    alu_v_set = NO; alu_v_rst = NO;
 
     //overflow mode, interrupt mode
     reg_ovm_set = NO; reg_ovm_rst = NO;
     reg_intm_en = NO; reg_intm_dis = NO;
 
     //AR register
-    reg_arp_ld = NO;
+    reg_arp_set = NO; reg_arp_rst = NO;
     reg_ar_ld = NO;
     reg_ar_inc = NO; reg_ar_dec = NO;
+
+    //DP register
+    reg_dp_set = NO; reg_dp_rst = NO;
 
     //T, P, ACC
     reg_t_ld = NO; reg_p_ld = NO;
@@ -804,6 +862,7 @@ always @(*) begin
 
     //RAM write
     ram_wr = NO;
+    ram_dmov = NO;
 
     //stack
     stk_data_sel = STACK_DATA_PC;
@@ -856,12 +915,141 @@ always @(*) begin
                 `endif
             end
 
+            //DINT
+            16'b0111_1111_1000_0001: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                reg_intm_dis = YES;
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type0("DINT", if_pc);
+                `endif
+            end
+
+            //EINT
+            16'b0111_1111_1000_0010: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                reg_intm_en = YES;
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type0("INT", if_pc);
+                `endif
+            end
+
+            //LST
+            16'b0111_1011_????_????: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                if(register_wrbus[15]) alu_v_set = YES; //overflow bit
+                else                   alu_v_rst = YES;
+                if(register_wrbus[14]) reg_ovm_set = YES; //overflow mode bit
+                else                   reg_ovm_rst = YES;
+                if(register_wrbus[0])  reg_dp_set = YES; //data memory pointer
+                else                   reg_dp_rst = YES;
+                //aux register pointer
+                if(if_opcodereg[7]) begin 
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
+                end
+                else begin
+                    if(register_wrbus[8])  reg_arp_set = YES;
+                    else                   reg_arp_rst = YES;
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type2("LST", if_opcodereg, if_pc, 0);
+                `endif
+            end
+
             //NOP
             16'b0111_1111_1000_0000: begin
                 busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
 
                 `ifdef IKA32010_DISASSEMBLY 
                     disasm_type0("NOP", if_pc);
+                `endif
+            end
+
+            //POP - POP stack to accumulator
+            16'b0111_1111_1001_1101: begin
+                if(ex_inst_cycle == 2'd0) begin
+                    busctrl_req = BUSCTRL_STOP; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                    if_pc_modesel = PC_HOLD;
+                    register_wrbus_source_sel = WRBUS_SOURCE_STACK;
+                    alu_modesel = ALU_ADD; alu_paz = YES; alu_pbdata = ALU_PBDATA_LOWWORD; //load from port B
+                    alu_acc_ld = YES;
+                    ex_inst_cycle_rst = NO;
+
+                    //deny interrupt request
+                    if_opcodereg_force_zero = NO; 
+                    stk_push = NO; stk_pop = YES; stk_data_sel = STACK_DATA_ACC;
+                end
+                else if(ex_inst_cycle == 2'd1) begin
+                    busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type4("POP", if_pc, ex_inst_cycle, busctrl_inlatch, 1);
+                `endif
+            end
+
+            //PUSH - PUSH stack from accumulator
+            16'b0111_1111_1001_1100: begin
+                if(ex_inst_cycle == 2'd0) begin
+                    busctrl_req = BUSCTRL_STOP; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                    if_pc_modesel = PC_HOLD;
+                    register_wrbus_source_sel = WRBUS_SOURCE_SHB;
+                    ex_inst_cycle_rst = NO;
+
+                    //deny interrupt request
+                    if_opcodereg_force_zero = NO; 
+                    stk_push = YES; stk_data_sel = STACK_DATA_ACC;
+                end
+                else if(ex_inst_cycle == 2'd1) begin
+                    busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type4("PUSH", if_pc, ex_inst_cycle, busctrl_inlatch, 1);
+                `endif
+            end
+
+            //ROVM
+            16'b0111_1111_1000_1010: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                reg_ovm_rst = YES;
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type0("ROVM", if_pc);
+                `endif
+            end
+
+            //SOVM
+            16'b0111_1111_1000_1011: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                reg_ovm_set = YES;
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type0("SOVM", if_pc);
+                `endif
+            end
+
+            //SSR - Store status register
+            16'b0111_1100_????_????: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                register_wrbus_source_sel = WRBUS_SOURCE_FLAG;
+                ram_wr = YES;
+                if(if_opcodereg[7]) begin 
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type2("SSR", if_opcodereg, if_pc, 0);
                 `endif
             end
 
@@ -889,7 +1077,11 @@ always @(*) begin
                 alu_acc_ld = YES;
                 sha_amt = {1'b0, if_opcodereg[11:8]}; 
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -904,7 +1096,11 @@ always @(*) begin
                 alu_acc_ld = YES;
                 sha_amt = 5'd16;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
                 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -918,7 +1114,11 @@ always @(*) begin
                 alu_modesel = ALU_ADD; alu_pbdata = ALU_PBDATA_LOWWORD; //load from port B
                 alu_acc_ld = YES;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -932,7 +1132,11 @@ always @(*) begin
                 alu_modesel = ALU_AND; alu_pbdata = ALU_PBDATA_LOWWORD; //load from port B
                 alu_acc_ld = YES;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -947,7 +1151,11 @@ always @(*) begin
                 alu_acc_ld = YES;
                 sha_amt = {1'b0, if_opcodereg[11:8]};
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -973,7 +1181,11 @@ always @(*) begin
                 alu_modesel = ALU_OR; alu_pbdata = ALU_PBDATA_LOWWORD; //load from port B
                 alu_acc_ld = YES;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -988,7 +1200,11 @@ always @(*) begin
                 ram_wr = YES;
                 shb_amt = if_opcodereg[10:8]; shb_mux = HIGH;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
             end
 
@@ -999,7 +1215,11 @@ always @(*) begin
                 ram_wr = YES;
                 shb_mux = LOW;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -1014,7 +1234,11 @@ always @(*) begin
                 alu_acc_ld = YES;
                 sha_amt = {1'b0, if_opcodereg[11:8]};
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -1029,7 +1253,11 @@ always @(*) begin
                 sha_amt = 5'd15;
                 //ACC will be loaded next cycle
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -1044,7 +1272,11 @@ always @(*) begin
                 alu_acc_ld = YES;
                 sha_amt = 5'd16;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -1058,7 +1290,11 @@ always @(*) begin
                 alu_modesel = ALU_SUB; alu_pbdata = ALU_PBDATA_LOWWORD; //load from port B
                 alu_acc_ld = YES;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -1072,7 +1308,11 @@ always @(*) begin
                 alu_modesel = ALU_XOR; alu_pbdata = ALU_PBDATA_LOWWORD; //load from port B
                 alu_acc_ld = YES;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -1098,7 +1338,11 @@ always @(*) begin
                 alu_acc_ld = YES;
                 sha_amt = 5'd16;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -1112,7 +1356,11 @@ always @(*) begin
                 alu_modesel = ALU_ADD; alu_paz = YES; alu_pbdata = ALU_PBDATA_LOWWORD;
                 alu_acc_ld = YES;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -1131,7 +1379,11 @@ always @(*) begin
                 busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
                 reg_ar_ld = YES;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -1153,8 +1405,8 @@ always @(*) begin
             //LARP - Load Auxillary Register Pointer Immediate
             16'b0110_1000_1000_000?: begin
                 busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
-                register_wrbus_source_sel = WRBUS_SOURCE_INST;
-                reg_arp_ld = YES;
+                if(if_opcodereg[0]) reg_arp_set = YES;
+                else                reg_arp_rst = YES;
 
                 `ifdef IKA32010_DISASSEMBLY 
                     disasm_type5("LARP", if_opcodereg, if_pc);
@@ -1164,9 +1416,14 @@ always @(*) begin
             //LDP - Load Data Memory Page Pointer
             16'b0110_1111_????_????: begin
                 busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
-                reg_dp_ld = YES;
+                if(register_wrbus[0]) reg_dp_set = YES;
+                else                  reg_dp_rst = YES;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -1177,8 +1434,8 @@ always @(*) begin
             //LDPK - Load Data Memory Page Pointer Immediate
             16'b0110_1110_0000_000?: begin
                 busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
-                register_wrbus_source_sel = WRBUS_SOURCE_INST;
-                reg_dp_ld = YES;
+                if(if_opcodereg[0]) reg_dp_set = YES;
+                else                reg_dp_rst = YES;
 
                 `ifdef IKA32010_DISASSEMBLY 
                     disasm_type5("LDPK", if_opcodereg, if_pc);
@@ -1189,7 +1446,11 @@ always @(*) begin
             16'b0110_1000_????_????: begin
                 busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -1203,7 +1464,11 @@ always @(*) begin
                 register_wrbus_source_sel = WRBUS_SOURCE_AR;
                 ram_wr = YES;
                 if(if_opcodereg[7]) begin 
-                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; reg_arp_ld = ~if_opcodereg[3]; //AR register
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
@@ -1387,8 +1652,9 @@ always @(*) begin
                 if(ex_inst_cycle == 2'd0) begin
                     busctrl_req = DATA_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
                     if_pc_modesel = (alu_flag_ovfl == 1'b1) ? PC_LOAD_IMMEDIATE : PC_INCREASE; //deny interrupt request
+                    alu_v_rst = YES;
                     ex_inst_cycle_rst = NO;
-
+                    
                     //deny interrupt request
                     if_opcodereg_force_zero = NO; 
                     stk_push = NO; stk_data_sel = STACK_DATA_ACC;
@@ -1468,7 +1734,7 @@ always @(*) begin
                 if(ex_inst_cycle == 2'd0) begin
                     busctrl_req = BUSCTRL_STOP; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
                     if_pc_modesel = PC_LOAD_WRBUS; //deny interrupt request
-                    register_wrbus_source_sel = WRBUS_SOURCE_STK;
+                    register_wrbus_source_sel = WRBUS_SOURCE_STACK;
                     ex_inst_cycle_rst = NO;
 
                     //deny interrupt request
@@ -1485,7 +1751,159 @@ always @(*) begin
             end
 
 
+            //
+            //  I/O AND DATA MEMORY INSTRUCTION
+            //
 
+            //IN - Input data from port
+            16'b0100_0???_????_????: begin
+                if(ex_inst_cycle == 2'd0) begin
+                    busctrl_req = COMMAND_IN; busctrl_addr_muxsel = BUSCTRL_ADDR_PERIPHERAL;
+                    if_pc_modesel = PC_HOLD;
+                    ex_inst_cycle_rst = NO;
+
+                    //deny interrupt request
+                    if_opcodereg_force_zero = NO; 
+                    stk_push = NO; stk_data_sel = STACK_DATA_ACC;
+                end
+                else if(ex_inst_cycle == 2'd1) begin
+                    busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                    register_wrbus_source_sel = WRBUS_SOURCE_INLATCH;
+                    ram_wr = YES;
+
+                    if(if_opcodereg[7]) begin 
+                        reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                        if(!if_opcodereg[3]) begin //AR register
+                            if(if_opcodereg[0]) reg_arp_set = YES;
+                            else                reg_arp_rst = YES;
+                        end
+                    end
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type6("IN", if_opcodereg, if_pc);
+                `endif
+            end
+
+            //OUT - Output data to port
+            16'b0100_1???_????_????: begin
+                if(ex_inst_cycle == 2'd0) begin
+                    busctrl_req = COMMAND_OUT; busctrl_addr_muxsel = BUSCTRL_ADDR_PERIPHERAL;
+                    if_pc_modesel = PC_HOLD;
+                    register_wrbus_source_sel <= WRBUS_SOURCE_RAM;
+                    ex_inst_cycle_rst = NO;
+
+                    //deny interrupt request
+                    if_opcodereg_force_zero = NO; 
+                    stk_push = NO; stk_data_sel = STACK_DATA_ACC;
+                end
+                else if(ex_inst_cycle == 2'd1) begin
+                    busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+
+                    if(if_opcodereg[7]) begin 
+                        reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                        if(!if_opcodereg[3]) begin //AR register
+                            if(if_opcodereg[0]) reg_arp_set = YES;
+                            else                reg_arp_rst = YES;
+                        end
+                    end
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type6("OUT", if_opcodereg, if_pc);
+                `endif
+            end
+
+            //TBLR - Table read
+            16'b0110_0111_????_????: begin
+                if(ex_inst_cycle == 2'd0) begin
+                    busctrl_req = DATA_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                    register_wrbus_source_sel = WRBUS_SOURCE_SHB;
+                    if_pc_modesel = PC_LOAD_WRBUS; //load PC from ACC
+                    ex_inst_cycle_rst = NO;
+
+                    //deny interrupt request
+                    if_opcodereg_force_zero = NO; 
+                    stk_push = YES; stk_data_sel = STACK_DATA_PC;
+                end
+                else if(ex_inst_cycle == 2'd1) begin
+                    busctrl_req = DATA_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                    register_wrbus_source_sel = WRBUS_SOURCE_STACK;
+                    if_pc_modesel = PC_LOAD_WRBUS; //load PC from STACK
+                    ex_inst_cycle_rst = NO;
+
+                    //deny interrupt request
+                    if_opcodereg_force_zero = NO; 
+                    stk_push = NO; stk_pop = YES; stk_data_sel = STACK_DATA_ACC;
+                end
+                else if(ex_inst_cycle == 2'd2) begin
+                    busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                    register_wrbus_source_sel = WRBUS_SOURCE_INLATCH;
+                    ram_wr = YES;
+
+                    if(if_opcodereg[7]) begin 
+                        reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                        if(!if_opcodereg[3]) begin //AR register
+                            if(if_opcodereg[0]) reg_arp_set = YES;
+                            else                reg_arp_rst = YES;
+                        end
+                    end
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type2("TBLR", if_opcodereg, if_pc, 0);
+                `endif
+            end
+
+            //TBLW - Table write
+            16'b0111_1101_????_????: begin
+                if(ex_inst_cycle == 2'd0) begin
+                    busctrl_req = DATA_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                    register_wrbus_source_sel = WRBUS_SOURCE_SHB;
+                    if_pc_modesel = PC_LOAD_WRBUS; //load PC from ACC
+                    ex_inst_cycle_rst = NO;
+
+                    //deny interrupt request
+                    if_opcodereg_force_zero = NO; 
+                    stk_push = YES; stk_data_sel = STACK_DATA_PC;
+                end
+                else if(ex_inst_cycle == 2'd1) begin
+                    busctrl_req = DATA_WRITE; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                    register_wrbus_source_sel = WRBUS_SOURCE_STACK;
+                    if_pc_modesel = PC_LOAD_WRBUS; //load PC from STACK
+                    ex_inst_cycle_rst = NO;
+
+                    //deny interrupt request
+                    if_opcodereg_force_zero = NO; 
+                    stk_push = NO; stk_pop = YES; stk_data_sel = STACK_DATA_ACC;
+                end
+                else if(ex_inst_cycle == 2'd2) begin
+                    busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                    register_wrbus_source_sel = WRBUS_SOURCE_INLATCH;
+                    ram_wr = YES;
+
+                    if(if_opcodereg[7]) begin 
+                        reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                        if(!if_opcodereg[3]) begin //AR register
+                            if(if_opcodereg[0]) reg_arp_set = YES;
+                            else                reg_arp_rst = YES;
+                        end
+                    end
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type2("TBLW", if_opcodereg, if_pc, 0);
+                `endif
+            end
+
+            //INVALID INSTRUCTION
+            default: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type0("INVALID INSTRUCTION", if_pc);
+                `endif
+            end
         endcase
     end
 
@@ -1494,8 +1912,6 @@ always @(*) begin
 
     end
 end
-
-
 
 endmodule
 
@@ -1516,6 +1932,7 @@ module IKA32010_alu (
     input   wire            i_ALU_ACC_LD,
     output  reg     [31:0]  o_ALU_ACC_OUTPUT,
 
+    input   wire            i_ALU_V_SET, i_ALU_V_RST,
     output  reg             o_Z, o_N, o_V //Zero, Negative, oVerflow
 );
 
@@ -1626,10 +2043,19 @@ always @(posedge i_EMUCLK) begin
         o_Z <= 1'b1; o_N <= 1'b0; o_V <= 1'b0;
     end
     else begin
-        if(!i_CEN_n) if(alu_acc_ld) begin
-            o_Z <= alu_output == 32'h0000_0000;
-            o_N <= alu_output[31];
-            o_V <= alu_adder31[31] ^ alu_adder1[1];
+        if(!i_CEN_n) begin
+            if(alu_acc_ld) begin
+                o_Z <= alu_output == 32'h0000_0000;
+                o_N <= alu_output[31];
+                o_V <= alu_adder31[31] ^ alu_adder1[1];
+            end
+            else begin
+                case({i_ALU_V_SET, i_ALU_V_RST})
+                    2'b10: o_V <= 1'b1;
+                    2'b01: o_V <= 1'b0;
+                    default: o_V <= o_V;
+                endcase 
+            end
         end
     end
 end
@@ -1641,6 +2067,7 @@ module IKA32010_ram (
     input   wire            i_EMUCLK,
     input   wire            i_CEN_n,
 
+    input   wire            i_DMOV, //one-cycle special command
     input   wire            i_WE,
     input   wire    [7:0]   i_ADDR,
     input   wire    [15:0]  i_DIN,
