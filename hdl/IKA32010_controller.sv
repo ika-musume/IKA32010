@@ -322,7 +322,7 @@ end
 reg             reg_intm; //0 = interrupt enabled, 1 = interrupt disabled
 reg             reg_intm_en, reg_intm_dis;
 always @(posedge i_EMUCLK) begin
-    if(!i_RS_n) reg_intm <= 1'b0;
+    if(!i_RS_n) reg_intm <= 1'b1;
     else begin
         if(!ncen_n) begin
             case({reg_intm_en, reg_intm_dis})
@@ -407,7 +407,7 @@ end
 
 reg             int_ack;
 reg             int_n_z, int_n_zz, int_n_zzz, int_latched;
-wire            int_rq = int_latched; //& ~reg_intm;
+wire            int_rq = int_latched & ~reg_intm;
 always @(posedge i_EMUCLK) begin
     if(!i_RS_n) begin
         int_n_z <= 1'b1;
@@ -637,6 +637,7 @@ end
 //disassembly message
 `ifdef IKA32010_DISASSEMBLY
 int     pc_z;
+int     rst_cyc = 0;
 int     tbl_cyc = 0;
 string  disasm, num_data;
 
@@ -661,6 +662,7 @@ function void disasm_type1;
     input   string  mnemonic;
     input   [15:0]  opcodereg;
     input   [11:0]  pc;
+    input           shb;
     disasm = "";
     `ifdef IKA32010_DISASSEMBLY_SHOWID
         disasm = {"IKA32010_", `IKA32010_DEVICE_ID, ": "};
@@ -676,7 +678,8 @@ function void disasm_type1;
              if(opcodereg[5:4] == 2'b00) disasm = {disasm, " *"}; //inc/dec
         else if(opcodereg[5:4] == 2'b01) disasm = {disasm, " *-"};
         else if(opcodereg[5:4] == 2'b10) disasm = {disasm, " *+"};
-        $sformat(num_data, ", %d", opcodereg[11:8]);
+        if(shb == 1'b0) $sformat(num_data, ", %d", opcodereg[11:8]);
+        else $sformat(num_data, ", %d", opcodereg[10:8]);
         disasm = {disasm, num_data};
         if(!opcodereg[3]) begin
             num_data = "";
@@ -910,6 +913,8 @@ always @(*) begin
 
     if(ex_state == 3'b000) begin
         //No change
+        disasm = {"IKA32010_", `IKA32010_DEVICE_ID, ": RESET\n"};
+        $display(disasm);
     end
 
     else if(ex_state == 3'b001) begin
@@ -955,7 +960,7 @@ always @(*) begin
                 reg_intm_en = YES;
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type0("INT", if_pc);
+                    disasm_type0("EINT", if_pc);
                 `endif
             end
 
@@ -1109,7 +1114,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type1("ADD", if_opcodereg, if_pc);
+                    disasm_type1("ADD", if_opcodereg, if_pc, 0);
                 `endif
             end
 
@@ -1183,7 +1188,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type1("LAC", if_opcodereg, if_pc);
+                    disasm_type1("LAC", if_opcodereg, if_pc, 0);
                 `endif
             end
 
@@ -1230,6 +1235,10 @@ always @(*) begin
                         else                reg_arp_rst = YES;
                     end
                 end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type1("SACH", if_opcodereg, if_pc, 1);
+                `endif
             end
 
             //SACL - Store low-order accumulator bits
@@ -1266,7 +1275,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type1("SUB", if_opcodereg, if_pc);
+                    disasm_type1("SUB", if_opcodereg, if_pc, 0);
                 `endif
             end
 
@@ -1782,7 +1791,7 @@ always @(*) begin
                 alu_acc_ld = YES;
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type1("APAC", if_opcodereg, if_pc);
+                    disasm_type1("APAC", if_opcodereg, if_pc, 0);
                 `endif
             end
 
@@ -1881,7 +1890,7 @@ always @(*) begin
                 alu_acc_ld = YES;
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type1("PAC", if_opcodereg, if_pc);
+                    disasm_type1("PAC", if_opcodereg, if_pc, 0);
                 `endif
             end
 
@@ -1892,7 +1901,7 @@ always @(*) begin
                 alu_acc_ld = YES;
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type1("SPAC", if_opcodereg, if_pc);
+                    disasm_type1("SPAC", if_opcodereg, if_pc, 0);
                 `endif
             end
 
@@ -2251,14 +2260,13 @@ always @(posedge i_EMUCLK) ram_dout <= RAM[ram_rdaddr];
 always @(posedge i_EMUCLK) if(i_WE) RAM[ram_wraddr] <= ram_din;
 
 //initialize 
-/*
 integer i;
 initial begin
     for(i=0; i<255; i=i+1) begin
         RAM[i] <= 16'h0000;
     end
 end
-*/
+
 endmodule
 
 
