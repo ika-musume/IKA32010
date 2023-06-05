@@ -437,14 +437,34 @@ end
 
 
 ///////////////////////////////////////////////////////////
-//////  Misc control bits
+//////  Multiplier registers
 ////
 
 reg             reg_t_ld; //T reg load
-reg             reg_p_ld; //P reg load
+reg     [31:0]  reg_t;
+wire    [31:0]  reg_p;
 
-reg     [31:0]  reg_p;
+always @(posedge i_EMUCLK) begin
+    if(!i_RS_n) begin
+       reg_t <= 32'h0000_0000; 
+    end
+    else begin 
+        if(!ncen_n) begin
+            if(reg_t_ld) reg_t <= register_wrbus;
+        end
+    end
+end
 
+parameter   MUL_OP1_SOURCE_IMMEDIATE = 1'b0;
+parameter   MUL_OP1_SOURCE_RAM = 1'b1;
+reg             mul_op1_source_sel;
+wire    [15:0]  mul_op1 = mul_op1_source_sel ? register_wrbus : {{3{register_wrbus[12]}}, register_wrbus[12:0]}; //sign extended
+reg             mul_en;
+
+IKA32010_multiplier u_multiplier (
+    .i_EMUCLK(i_EMUCLK), .i_CEN_n(ncen_n), .i_RST_n(i_RS_n), 
+    .i_MUL_EN(mul_en), .i_OP0(reg_t), .i_OP1(mul_op1), .o_P(reg_p)
+);
 
 
 
@@ -476,7 +496,6 @@ always @(*) begin
     sha_output = {{16{register_wrbus[15]}}, register_wrbus}; //sign extension
     sha_output = sha_output << sha_amt; //do arithmetic shift
 end
-
 
 //define ALU mode/control parameters
 reg     [3:0]   alu_modesel; //000 AND, 001 OR,  010 XOR, 011 ABS
@@ -515,7 +534,6 @@ IKA32010_alu u_alu (
     .i_ALU_V_SET(alu_v_set), .i_ALU_V_RST(alu_v_rst),
     .o_Z(alu_flag_zero), .o_N(alu_flag_neg), .o_V(alu_flag_ovfl)
 );
-
 
 //shifter-B(accumulator output)
 reg             shb_mux;
@@ -582,10 +600,6 @@ always @(posedge i_EMUCLK) begin
         ex_inst_cycle <= (ex_inst_cycle_rst) ? 2'd0 : ex_inst_cycle + 2'd1;
     end
 end
-
-
-//interrupt control
-reg             ex_int_start = 1'b0;
 
 //reset delay
 reg             rs_n_z, rs_n_zz;
@@ -716,6 +730,7 @@ function void disasm_type3;
     input   [15:0]  opcodereg;
     input   [11:0]  pc;
     input           aux;
+    input           mul;
     disasm = "";
     `ifdef IKA32010_DISASSEMBLY_SHOWID
         disasm = {"IKA32010_", `IKA32010_DEVICE_ID, ": "};
@@ -727,7 +742,8 @@ function void disasm_type3;
         $sformat(num_data, " AR%b,", opcodereg[8]);
         disasm = {disasm, num_data};
     end
-    $sformat(num_data, " 0x%h", opcodereg[7:0]);
+    if(mul == 0) $sformat(num_data, " 0x%h", opcodereg[7:0]);
+    else         $sformat(num_data, " 0x%d", signed'(opcodereg[12:0]));
     disasm = {disasm, num_data};
     disasm = {disasm, "\n"};
     if(pc_z != pc) $display(disasm);
@@ -841,6 +857,9 @@ always @(*) begin
     //ALU overflow flag set/reset
     alu_v_set = NO; alu_v_rst = NO;
 
+    //ACC load
+    alu_acc_ld = NO;
+
     //overflow mode, interrupt mode
     reg_ovm_set = NO; reg_ovm_rst = NO;
     reg_intm_en = NO; reg_intm_dis = NO;
@@ -853,9 +872,8 @@ always @(*) begin
     //DP register
     reg_dp_set = NO; reg_dp_rst = NO;
 
-    //T, P, ACC
-    reg_t_ld = NO; reg_p_ld = NO;
-    alu_acc_ld = NO;
+    //Multiplier
+    reg_t_ld = NO; mul_en = NO; mul_op1_source_sel = MUL_OP1_SOURCE_RAM;
 
     //RAM write
     ram_wr = NO;
@@ -1168,7 +1186,7 @@ always @(*) begin
                 register_wrbus_source_sel = WRBUS_SOURCE_INST;
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type3("LACK", if_opcodereg, if_pc, 0);
+                    disasm_type3("LACK", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1395,7 +1413,7 @@ always @(*) begin
                 reg_ar_ld = YES;
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type3("LARK", if_opcodereg, if_pc, 1);
+                    disasm_type3("LARK", if_opcodereg, if_pc, 1, 0);
                 `endif
             end
 
@@ -1745,8 +1763,155 @@ always @(*) begin
 
 
             //
+            //  MULTIPLIER INSTRUCTION
+            //
+
+            //APAC - Add P register to accumulator
+            16'b0111_1111_1000_1111: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                alu_pbsel = ALU_SOURCE_MUL; alu_modesel = ALU_ADD;
+                alu_acc_ld = YES;
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type1("APAC", if_opcodereg, if_pc);
+                `endif
+            end
+
+            //LT - Load T Register
+            16'b0110_1010_????_????: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                reg_t_ld = YES;
+
+                if(if_opcodereg[7]) begin 
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type2("LT", if_opcodereg, if_pc, 0);
+                `endif
+            end
+
+            //LTA - LTA combines LT and APAC into one instruction
+            16'b0110_1100_????_????: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                alu_pbsel = ALU_SOURCE_MUL; alu_modesel = ALU_ADD;
+                alu_acc_ld = YES;
+                reg_t_ld = YES;
+
+                if(if_opcodereg[7]) begin 
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type2("LTA", if_opcodereg, if_pc, 0);
+                `endif
+            end
+
+            //LTD - LTD combines LT, APAC, and DMOV into one instruction
+            16'b0110_1011_????_????: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                alu_pbsel = ALU_SOURCE_MUL; alu_modesel = ALU_ADD;
+                alu_acc_ld = YES;
+                reg_t_ld = YES;
+                ram_dmov = YES;
+
+                if(if_opcodereg[7]) begin 
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type2("LTD", if_opcodereg, if_pc, 0);
+                `endif
+            end
+
+            //MPY - Multiply with T register, store product in P register
+            16'b0110_1101_????_????: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                mul_en = YES; mul_op1_source_sel = MUL_OP1_SOURCE_RAM;
+                
+                if(if_opcodereg[7]) begin 
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type2("MPY", if_opcodereg, if_pc, 0);
+                `endif
+            end
+
+            //MPYK - Multiply T register with immediate operand; store product in P register
+            16'b100?_????_????_????: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                register_wrbus_source_sel = WRBUS_SOURCE_INST; //load operand from instruction register(immediate)
+                mul_en = YES; mul_op1_source_sel = MUL_OP1_SOURCE_IMMEDIATE;
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type3("MPYK", if_opcodereg, if_pc, 0, 1);
+                `endif
+            end
+
+            //PAC - Load accumulator from P register
+            16'b0111_1111_1000_1110: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                alu_pbsel = ALU_SOURCE_MUL; alu_modesel = ALU_ADD; alu_pbz = YES; //block acc feedback
+                alu_acc_ld = YES;
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type1("PAC", if_opcodereg, if_pc);
+                `endif
+            end
+
+            //SPAC - Subtract P register to accumulator
+            16'b0111_1111_1001_0000: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                alu_pbsel = ALU_SOURCE_MUL; alu_modesel = ALU_SUB;
+                alu_acc_ld = YES;
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type1("SPAC", if_opcodereg, if_pc);
+                `endif
+            end
+
+
+
+
+
+            //
             //  I/O AND DATA MEMORY INSTRUCTION
             //
+
+            //DMOV - Copy contents of data memory location into next higher location
+            16'b0110_1001_????_????: begin
+                busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
+                ram_dmov = YES;
+
+                if(if_opcodereg[7]) begin 
+                    reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
+                    if(!if_opcodereg[3]) begin //AR register
+                        if(if_opcodereg[0]) reg_arp_set = YES;
+                        else                reg_arp_rst = YES;
+                    end
+                end
+
+                `ifdef IKA32010_DISASSEMBLY 
+                    disasm_type2("DMOV", if_opcodereg, if_pc, 0);
+                `endif
+            end
 
             //IN - Input data from port
             16'b0100_0???_????_????: begin
@@ -2064,15 +2229,21 @@ module IKA32010_ram (
     input   wire            i_WE,
     input   wire    [7:0]   i_ADDR,
     input   wire    [15:0]  i_DIN,
-    output  reg     [15:0]  o_DOUT
+    output  wire    [15:0]  o_DOUT
 );
 
-reg     [15:0]  RAM[0:255];
+wire            ram_we = i_DMOV ? 1'b1 : i_WE;
+wire    [7:0]   ram_rdaddr = i_ADDR;
+wire    [7:0]   ram_wraddr = i_DMOV ? {i_ADDR[7], i_ADDR[6:0] + 7'd1} : i_ADDR;
+reg     [15:0]  ram_dout;
+wire    [15:0]  ram_din = i_DMOV ? ram_dout : i_DIN;
 
-always @(posedge i_EMUCLK) begin
-    if(i_WE & ~i_CEN_n) RAM[i_ADDR] <= i_DIN;
-    else o_DOUT <= RAM[i_ADDR];
-end
+assign  o_DOUT = ram_dout;
+
+//simple dual port RAM
+reg     [15:0]  RAM[0:255];
+always @(posedge i_EMUCLK) ram_dout <= RAM[ram_rdaddr];
+always @(posedge i_EMUCLK) if(i_WE) RAM[ram_wraddr] <= ram_din;
 
 //initialize 
 /*
@@ -2124,5 +2295,42 @@ always @(posedge i_EMUCLK) begin
         end
     end
 end
+
+endmodule
+
+
+module IKA32010_multiplier (
+    input   wire            i_EMUCLK,
+    input   wire            i_CEN_n,
+    input   wire            i_RST_n,
+
+    input   wire            i_MUL_EN,
+
+    input   wire    [15:0]  i_OP0,
+    input   wire    [15:0]  i_OP1,
+    output  wire    [31:0]  o_P
+);
+
+//Quartus(DE10-nano) and Vivado(Zybo-Z20) will synthesis this well using a DSP block
+
+//multiplier
+reg signed  [15:0]  op0_latch, op1_latch;
+reg signed  [31:0]  result;
+always @(posedge i_EMUCLK) begin
+    if(i_RST_n) begin
+        op0_latch <= 16'sh0000;
+        op1_latch <= 16'sh0000;
+        result <= 32'sh0000_0000;
+    end
+    else begin
+        if(i_MUL_EN) begin
+            op0_latch <= signed'(i_OP0);
+            op1_latch <= signed'(i_OP1);
+            result <= op0_latch * op1_latch;
+        end
+    end
+end
+
+assign  o_P = unsigned'(result);
 
 endmodule
