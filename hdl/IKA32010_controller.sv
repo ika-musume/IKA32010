@@ -441,12 +441,12 @@ end
 ////
 
 reg             reg_t_ld; //T reg load
-reg     [31:0]  reg_t;
+reg     [15:0]  reg_t;
 wire    [31:0]  reg_p;
 
 always @(posedge i_EMUCLK) begin
     if(!i_RS_n) begin
-       reg_t <= 32'h0000_0000; 
+       reg_t <= 16'h0000; 
     end
     else begin 
         if(!ncen_n) begin
@@ -637,6 +637,7 @@ end
 //disassembly message
 `ifdef IKA32010_DISASSEMBLY
 int     pc_z;
+int     tbl_cyc = 0;
 string  disasm, num_data;
 
 //NOP, ABS
@@ -694,6 +695,7 @@ function void disasm_type2;
     input   [15:0]  opcodereg;
     input   [11:0]  pc;
     input           aux;
+    input           tbl;
     disasm = "";
     `ifdef IKA32010_DISASSEMBLY_SHOWID
         disasm = {"IKA32010_", `IKA32010_DEVICE_ID, ": "};
@@ -720,7 +722,14 @@ function void disasm_type2;
         end
     end
     disasm = {disasm, "\n"};
-    if(pc_z != pc) $display(disasm);
+    if(pc_z != pc) begin 
+        if(tbl == 0) $display(disasm);
+        else begin
+            if(tbl_cyc > 2) tbl_cyc = 0;
+            if(tbl_cyc == 0) $display(disasm);
+            tbl_cyc = tbl_cyc + 1;
+        end
+    end
     pc_z = pc;
 endfunction
 
@@ -973,7 +982,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("LST", if_opcodereg, if_pc, 0);
+                    disasm_type2("LST", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1064,7 +1073,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("SSR", if_opcodereg, if_pc, 0);
+                    disasm_type2("SSR", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1119,7 +1128,7 @@ always @(*) begin
                 end
                 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("ADDH", if_opcodereg, if_pc, 0);
+                    disasm_type2("ADDH", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1137,7 +1146,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("ADDS", if_opcodereg, if_pc, 0);
+                    disasm_type2("ADDS", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1155,7 +1164,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("AND", if_opcodereg, if_pc, 0);
+                    disasm_type2("AND", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1204,7 +1213,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("OR", if_opcodereg, if_pc, 0);
+                    disasm_type2("OR", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1238,7 +1247,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("SACL", if_opcodereg, if_pc, 0);
+                    disasm_type2("SACL", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1276,7 +1285,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("SUBC", if_opcodereg, if_pc, 0);
+                    disasm_type2("SUBC", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1295,7 +1304,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("SUBH", if_opcodereg, if_pc, 0);
+                    disasm_type2("SUBH", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1313,7 +1322,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("SUBS", if_opcodereg, if_pc, 0);
+                    disasm_type2("SUBS", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1331,7 +1340,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("XOR", if_opcodereg, if_pc, 0);
+                    disasm_type2("XOR", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1361,7 +1370,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("ZALH", if_opcodereg, if_pc, 0);
+                    disasm_type2("ZALH", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1379,7 +1388,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("ZALS", if_opcodereg, if_pc, 0);
+                    disasm_type2("ZALS", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1402,7 +1411,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("LAR", if_opcodereg, if_pc, 1);
+                    disasm_type2("LAR", if_opcodereg, if_pc, 1, 0);
                 `endif
             end
 
@@ -1418,7 +1427,7 @@ always @(*) begin
             end
 
             //MAR(LARP) - Modify auxiliary register and pointer(Load Auxillary Register Pointer Immediate)
-            16'b0110_1000_1000_000?: begin
+            16'b0110_1000_1???_????: begin
                 busctrl_req = OPCODE_READ; busctrl_addr_muxsel = BUSCTRL_ADDR_PC;
                 reg_ar_inc = if_opcodereg[5]; reg_ar_dec = if_opcodereg[4]; 
                 if(!if_opcodereg[3]) begin //AR register
@@ -1427,7 +1436,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("MAR(LARP)", if_opcodereg, if_pc, 0);
+                    disasm_type2("MAR(LARP)", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1445,7 +1454,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("LDP", if_opcodereg, if_pc, 0);
+                    disasm_type2("LDP", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1483,7 +1492,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("SAR", if_opcodereg, if_pc, 1);
+                    disasm_type2("SAR", if_opcodereg, if_pc, 1, 0);
                 `endif
             end
 
@@ -1791,7 +1800,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("LT", if_opcodereg, if_pc, 0);
+                    disasm_type2("LT", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1811,7 +1820,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("LTA", if_opcodereg, if_pc, 0);
+                    disasm_type2("LTA", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1832,7 +1841,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("LTD", if_opcodereg, if_pc, 0);
+                    disasm_type2("LTD", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1850,7 +1859,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("MPY", if_opcodereg, if_pc, 0);
+                    disasm_type2("MPY", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -1889,8 +1898,6 @@ always @(*) begin
 
 
 
-
-
             //
             //  I/O AND DATA MEMORY INSTRUCTION
             //
@@ -1909,7 +1916,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("DMOV", if_opcodereg, if_pc, 0);
+                    disasm_type2("DMOV", if_opcodereg, if_pc, 0, 0);
                 `endif
             end
 
@@ -2009,7 +2016,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("TBLR", if_opcodereg, if_pc, 0);
+                    disasm_type2("TBLR", if_opcodereg, if_pc, 0, 1);
                 `endif
             end
 
@@ -2050,7 +2057,7 @@ always @(*) begin
                 end
 
                 `ifdef IKA32010_DISASSEMBLY 
-                    disasm_type2("TBLW", if_opcodereg, if_pc, 0);
+                    disasm_type2("TBLW", if_opcodereg, if_pc, 0, 1);
                 `endif
             end
 
@@ -2064,8 +2071,6 @@ always @(*) begin
             end
         endcase
     end
-
-
     else begin
 
     end
