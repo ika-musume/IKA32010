@@ -19,21 +19,21 @@ initial begin
     #200 RS_n <= 1'b0;
     #120 RS_n <= 1'b1;
 
-    #420 INT_n <= 1'b0;
+    #2420 INT_n <= 1'b0;
     #63 INT_n <= 1'b1;
 end
 
 wire            MEN_n, DEN_n, WE_n;
 wire    [11:0]  ADDR;
-wire    [15:0]  DBUS;
+wire    [15:0]  RDBUS, WRBUS;
 
-IKA32010_controller main (
+IKA32010 main (
     .i_EMUCLK               (EMUCLK                     ),
-    .i_CLKIN_PCEN_n         (cen_n                      ),
+    .i_CLKIN_PCEN           (~cen_n                     ),
 
     .o_CLKOUT               (                           ),
-    .o_CLKOUT_PCEN_n        (                           ),
-    .o_CLKOUT_NCEN_n        (                           ),
+    .o_CLKOUT_PCEN          (                           ),
+    .o_CLKOUT_NCEN          (                           ),
 
     .i_RS_n                 (RS_n                       ),
 
@@ -42,9 +42,9 @@ IKA32010_controller main (
     .o_WE_n                 (WE_n                       ),
 
     .o_AOUT                 (ADDR                       ),
-    .i_DIN                  (DBUS                        ),
-    .o_DOUT                 (                           ),
-    .o_DOUT_OE_n            (                           ),
+    .i_DIN                  (RDBUS                      ),
+    .o_DOUT                 (WRBUS                      ),
+    .o_DOUT_OE              (                           ),
 
     .i_BIO_n                (1'b1                       ),
     .i_INT_n                (INT_n                      )
@@ -52,10 +52,24 @@ IKA32010_controller main (
 
 
 
+reg     [15:0]  addrlatch;
+always @(posedge EMUCLK) if(!WE_n && ADDR[2:0] == 3'd0) addrlatch <= WRBUS;
 
 
-reg     [15:0]  in = 16'h0000;
-assign  DBUS = (DEN_n) ? 16'hZZZZ : in;
+reg     [7:0]   m68kram_buf[0:16383];
+reg     [15:0]  m68kram[0:8191];
+integer i;
+initial begin
+    $readmemh("D:/PROCESSOR/IKA32010/IKA32010/rom/68k.txt", m68kram_buf);
+
+    for(i=0; i<8192; i=i+1) begin
+        m68kram[i] = {m68kram_buf[2*i], m68kram_buf[2*i+1]};
+    end
+end
+
+
+
+assign  RDBUS = (DEN_n) ? 16'hZZZZ : m68kram[addrlatch[12:0]];
 
 
 
@@ -63,7 +77,7 @@ assign  DBUS = (DEN_n) ? 16'hZZZZ : in;
 
 reg     [7:0]   dsp_hi[0:2047];
 reg     [7:0]   dsp_lo[0:2047];
-assign  DBUS = (MEN_n) ? 16'hZZZZ : {dsp_hi[ADDR], dsp_lo[ADDR]};
+assign  RDBUS = (MEN_n) ? 16'hZZZZ : {dsp_hi[ADDR], dsp_lo[ADDR]};
 initial begin
     $readmemh("D:/PROCESSOR/IKA32010/IKA32010/rom/dsp_hi.txt", dsp_hi);
     $readmemh("D:/PROCESSOR/IKA32010/IKA32010/rom/dsp_lo.txt", dsp_lo);
