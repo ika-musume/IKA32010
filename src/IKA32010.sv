@@ -1999,7 +1999,7 @@ module IKA32010_multiplier (
 reg signed  [15:0]  op0_latch, op1_latch;
 reg signed  [31:0]  result;
 always @(posedge i_EMUCLK) begin
-    if(i_RST_n) begin
+    if(!i_RST_n) begin
         op0_latch <= 16'sh0000;
         op1_latch <= 16'sh0000;
         result <= 32'sh0000_0000;
